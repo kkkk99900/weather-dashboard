@@ -1,5 +1,4 @@
-﻿.env
+.env
 __pycache__/
 *.pyc
 .streamlit/secrets.toml
-hanoi_bg.jpg

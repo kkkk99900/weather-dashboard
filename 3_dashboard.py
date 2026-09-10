@@ -137,19 +137,22 @@ def load_weather_data():
         # Chỉ lấy 48 giờ gần nhất để vẽ biểu đồ
         df = df.tail(48).reset_index(drop=True)
 
-    except Exception as e:
-        st.warning(f"⚠️ Không kết nối được MinIO: {e} — Dùng dữ liệu mẫu.")
-        now   = datetime.now()
-        hours = [now - timedelta(hours=i) for i in range(48, 0, -1)]
-        np.random.seed(42)
-        df = pd.DataFrame({
-            "time":        hours,
-            "temperature": 26 + 8*np.sin(np.linspace(0, 4*np.pi, 48)) + np.random.normal(0, 0.8, 48),
-            "pressure":    1012 + 5*np.sin(np.linspace(0, 2*np.pi, 48)) + np.random.normal(0, 0.5, 48),
-            "humidity":    65 + 15*np.sin(np.linspace(1, 5*np.pi, 48)) + np.random.normal(0, 2, 48),
-            "rainfall":    np.clip(np.random.exponential(0.3, 48), 0, 5),
-            "wind_speed":  8 + 5*np.random.random(48),
-        })
+    except Exception:
+        # Fallback: đọc từ file local (khi deploy cloud hoặc MinIO offline)
+        df = pd.read_parquet("data/hanoi_2023.parquet")
+        rename_map = {
+            "temperature_2m":       "temperature",
+            "relative_humidity_2m": "humidity",
+            "surface_pressure":     "pressure",
+            "precipitation":        "rainfall",
+            "wind_speed_10m":       "wind_speed",
+        }
+        df = df.rename(columns=rename_map)
+        if "wind_speed" not in df.columns:
+            df["wind_speed"] = 8.0
+        df["time"] = pd.to_datetime(df["time"])
+        df = df.sort_values("time").reset_index(drop=True)
+        df = df.tail(48).reset_index(drop=True)
 
     # Tạo dự báo 7 ngày từ dữ liệu thực — bắt đầu từ ngày hôm nay
     day_names    = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]

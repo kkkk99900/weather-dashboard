@@ -1,0 +1,8 @@
+﻿streamlit
+pandas
+plotly
+minio
+python-dotenv
+pyarrow
+requests
+numpy

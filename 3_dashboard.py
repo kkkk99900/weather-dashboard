@@ -180,6 +180,61 @@ def load_weather_data():
 df, forecast = load_weather_data()
 latest = df.iloc[-1]   # hàng cuối dataset 2023 từ MinIO
 
+@st.cache_data(ttl=300)
+def load_gold_data():
+    """Đọc Gold Layer — dữ liệu đã qua Feature Engineering (hour, day, month)"""
+    try:
+        response = minio_client.get_object(
+            "weather-data",
+            "gold/year=2023/hanoi_weather_features.parquet"
+        )
+        df_g = pd.read_parquet(io.BytesIO(response.read()))
+        response.close(); response.release_conn()
+        rename_map = {
+            "temperature_2m":       "temperature",
+            "relative_humidity_2m": "humidity",
+            "surface_pressure":     "pressure",
+            "precipitation":        "rainfall",
+            "wind_speed_10m":       "wind_speed",
+        }
+        df_g = df_g.rename(columns=rename_map)
+        df_g["time"] = pd.to_datetime(df_g["time"])
+        return df_g
+    except Exception:
+        # Fallback: tính từ Silver data
+        df_g = df.copy()
+        # Đọc lại toàn bộ silver (không giới hạn 48h)
+        try:
+            r2 = minio_client.get_object("weather-data",
+                                         "silver/year=2023/hanoi_weather_clean.parquet")
+            df_g = pd.read_parquet(io.BytesIO(r2.read()))
+            r2.close(); r2.release_conn()
+            rename_map = {
+                "temperature_2m": "temperature",
+                "relative_humidity_2m": "humidity",
+                "surface_pressure": "pressure",
+                "precipitation": "rainfall",
+                "wind_speed_10m": "wind_speed",
+            }
+            df_g = df_g.rename(columns=rename_map)
+            df_g["time"] = pd.to_datetime(df_g["time"])
+        except Exception:
+            df_g = pd.read_parquet("data/hanoi_2023.parquet")
+            df_g = df_g.rename(columns={
+                "temperature_2m": "temperature",
+                "relative_humidity_2m": "humidity",
+                "surface_pressure": "pressure",
+                "precipitation": "rainfall",
+                "wind_speed_10m": "wind_speed",
+            })
+            df_g["time"] = pd.to_datetime(df_g["time"])
+        df_g["hour"]  = df_g["time"].dt.hour
+        df_g["day"]   = df_g["time"].dt.day
+        df_g["month"] = df_g["time"].dt.month
+        return df_g
+
+df_gold = load_gold_data()
+
 # ── Sidebar ──
 with st.sidebar:
     st.markdown('<p class="section-title">⚙️ Bộ lọc</p>', unsafe_allow_html=True)
@@ -669,10 +724,126 @@ with st.expander("📈 Phân tích thống kê mô tả", expanded=True):
         with target_col:
             st.plotly_chart(fig_h, use_container_width=True, config={"displayModeBar": False})
 
+# ── ROW GOLD — Phân tích từ Gold Layer ──
+st.markdown("<hr class='g-divider'>", unsafe_allow_html=True)
+with st.expander("📊 Phân tích dữ liệu theo giờ, tháng, năm", expanded=True):
+    st.markdown('<p class="section-title">📊 Phân tích dữ liệu theo giờ, tháng, năm</p>', unsafe_allow_html=True)
+
+    if "hour" not in df_gold.columns:
+        df_gold["hour"]  = df_gold["time"].dt.hour
+        df_gold["day"]   = df_gold["time"].dt.day
+        df_gold["month"] = df_gold["time"].dt.month
+
+    gc1, gc2, gc3 = st.columns(3)
+
+    # ── Biểu đồ 1: Nhiệt độ trung bình theo GIỜ trong ngày ──
+    with gc1:
+        hourly_avg = df_gold.groupby("hour")["temperature"].mean().reset_index()
+        fig_hour = go.Figure()
+        fig_hour.add_trace(go.Bar(
+            x=hourly_avg["hour"],
+            y=hourly_avg["temperature"].round(1),
+            marker=dict(
+                color=hourly_avg["temperature"],
+                colorscale=[[0,"#1a3a6b"],[0.5,"#ff6b35"],[1,"#f85149"]],
+                showscale=False,
+            ),
+            text=[f"{v:.1f}°" for v in hourly_avg["temperature"]],
+            textposition="outside", textfont=dict(size=9, color="#8b949e"),
+        ))
+        lg1 = dict(PLOTLY_LAYOUT)
+        lg1.update(height=240, showlegend=False, bargap=0.1,
+                   margin=dict(l=40, r=8, t=42, b=30),
+                   title=dict(text="🕐 Nhiệt độ TB theo giờ trong ngày",
+                              font=dict(color="#e6edf3", size=12), x=0, xanchor="left"),
+                   xaxis=dict(showgrid=False, zeroline=False, color="#8b949e",
+                              tickvals=list(range(0,24,3)),
+                              ticktext=[f"{h}h" for h in range(0,24,3)],
+                              tickfont=dict(size=10)),
+                   yaxis=dict(showgrid=True, gridcolor="#21262d", zeroline=False,
+                              tickfont=dict(size=10),
+                              title=dict(text="°C", font=dict(size=10, color="#8b949e"))))
+        fig_hour.update_layout(**lg1)
+        st.plotly_chart(fig_hour, use_container_width=True, config={"displayModeBar": False})
+
+    # ── Biểu đồ 2: Nhiệt độ & Độ ẩm trung bình theo THÁNG ──
+    with gc2:
+        month_avg = df_gold.groupby("month").agg(
+            temperature=("temperature","mean"),
+            humidity=("humidity","mean")
+        ).reset_index()
+        month_labels = ["T1","T2","T3","T4","T5","T6","T7","T8","T9","T10","T11","T12"]
+        fig_month = go.Figure()
+        fig_month.add_trace(go.Scatter(
+            x=month_avg["month"], y=month_avg["temperature"].round(1),
+            mode="lines+markers", name="Nhiệt độ (°C)",
+            line=dict(color="#ff6b35", width=2),
+            marker=dict(size=6, color="#ff6b35"),
+            yaxis="y1",
+        ))
+        fig_month.add_trace(go.Scatter(
+            x=month_avg["month"], y=month_avg["humidity"].round(1),
+            mode="lines+markers", name="Độ ẩm (%)",
+            line=dict(color="#42a5f5", width=2, dash="dot"),
+            marker=dict(size=6, color="#42a5f5"),
+            yaxis="y2",
+        ))
+        lg2 = dict(PLOTLY_LAYOUT)
+        lg2.update(height=240, bargap=0.1,
+                   margin=dict(l=40, r=40, t=42, b=30),
+                   title=dict(text="📅 Nhiệt độ & Độ ẩm theo tháng",
+                              font=dict(color="#e6edf3", size=12), x=0, xanchor="left"),
+                   legend=dict(orientation="h", y=1.15, x=0,
+                               font=dict(size=10, color="#8b949e")),
+                   xaxis=dict(showgrid=False, zeroline=False, color="#8b949e",
+                              tickvals=list(range(1,13)),
+                              ticktext=month_labels, tickfont=dict(size=10)),
+                   yaxis=dict(showgrid=True, gridcolor="#21262d", zeroline=False,
+                              tickfont=dict(size=10), title=dict(text="°C", font=dict(size=10, color="#ff6b35"))),
+                   yaxis2=dict(overlaying="y", side="right", showgrid=False,
+                               zeroline=False, tickfont=dict(size=10, color="#42a5f5"),
+                               title=dict(text="%", font=dict(size=10, color="#42a5f5"))))
+        fig_month.update_layout(**lg2)
+        st.plotly_chart(fig_month, use_container_width=True, config={"displayModeBar": False})
+
+    # ── Biểu đồ 3: Heatmap Giờ × Tháng (Nhiệt độ TB) ──
+    with gc3:
+        pivot = df_gold.groupby(["month","hour"])["temperature"].mean().reset_index()
+        pivot_table = pivot.pivot(index="month", columns="hour", values="temperature")
+        fig_heat = go.Figure(go.Heatmap(
+            z=pivot_table.values,
+            x=[f"{h}h" for h in pivot_table.columns],
+            y=[f"T{m}" for m in pivot_table.index],
+            colorscale=[[0,"#0d1b3e"],[0.4,"#1565c0"],[0.7,"#ff6b35"],[1,"#f85149"]],
+            showscale=True,
+            colorbar=dict(thickness=10, tickfont=dict(color="#8b949e", size=9),
+                          bgcolor="rgba(0,0,0,0)", bordercolor="#30363d"),
+        ))
+        lg3 = dict(PLOTLY_LAYOUT)
+        lg3.update(height=240,
+                   margin=dict(l=40, r=40, t=42, b=30),
+                   title=dict(text="🌡️ Heatmap Nhiệt độ: Giờ × Tháng",
+                              font=dict(color="#e6edf3", size=12), x=0, xanchor="left"),
+                   xaxis=dict(color="#8b949e", tickfont=dict(size=9),
+                              tickvals=[f"{h}h" for h in range(0,24,4)]),
+                   yaxis=dict(color="#8b949e", tickfont=dict(size=9), showgrid=False))
+        fig_heat.update_layout(**lg3)
+        st.plotly_chart(fig_heat, use_container_width=True, config={"displayModeBar": False})
+
+    # Ghi chú nguồn Gold
+    st.markdown(
+        '<div style="font-size:11px;color:#484f58;text-align:right;margin-top:-8px;">'
+        '📦 Nguồn: <b style="color:#e3b341;">Gold Layer</b> — '
+        'gold/year=2023/hanoi_weather_features.parquet · Feature Engineering bởi 2_etl.py'
+        '</div>',
+        unsafe_allow_html=True
+    )
+
 # ── Footer ──
 st.markdown(f"""
 <div style="text-align:center;padding:20px 0 8px;font-size:12px;color:#484f58;">
     🌤️ Weather Dashboard &nbsp;·&nbsp; Nguồn: MinIO Station — Hà Nội 2023 &nbsp;·&nbsp;
     {datetime.now().strftime("%H:%M:%S %d/%m/%Y")} &nbsp;·&nbsp; Streamlit + Plotly
 </div>
-""", unsafe_allow_html=True)
+""", unsafe_allow_html=True)
+

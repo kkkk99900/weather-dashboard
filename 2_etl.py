@@ -23,6 +23,7 @@ client = Minio(
 bucket_name = "weather-data"
 object_name_json = "bronze/year=2023/hanoi_weather_raw.json"
 object_name_parquet = "silver/year=2023/hanoi_weather_clean.parquet"
+object_name_gold = "gold/year=2023/hanoi_weather_features.parquet"
 
 # Đảm bảo bucket weather-data tồn tại
 if not client.bucket_exists(bucket_name):
@@ -71,8 +72,34 @@ client.put_object(
 )
 
 # -----------------------------------------
+# BƯỚC 4.2: TẠO TẦNG GOLD (FEATURE ENGINEERING)
+# -----------------------------------------
+print(f">>> Đang tạo đặc trưng và lưu Parquet lên tầng Gold: {bucket_name}/{object_name_gold}...")
+
+# Feature Engineering: trích xuất hour, day, month từ cột time
+df_gold = df.copy()
+df_gold['hour']  = df_gold['time'].dt.hour
+df_gold['day']   = df_gold['time'].dt.day
+df_gold['month'] = df_gold['time'].dt.month
+
+# Nén và đẩy lên Gold Layer
+parquet_buffer_gold = io.BytesIO()
+df_gold.to_parquet(parquet_buffer_gold, index=False, engine='pyarrow', compression='snappy')
+parquet_data_gold = parquet_buffer_gold.getvalue()
+gold_size_kb = len(parquet_data_gold) / 1024
+
+client.put_object(
+    bucket_name=bucket_name,
+    object_name=object_name_gold,
+    data=io.BytesIO(parquet_data_gold),
+    length=len(parquet_data_gold)
+)
+print(">>> Đã tạo và đẩy dữ liệu tầng Gold thành công!")
+
+# -----------------------------------------
 # BƯỚC 5: ĐO LƯỜNG THỰC NGHIỆM ĐỌC PARQUET
 # -----------------------------------------
+# Đo Silver
 start_time_pq = time.time()
 pq_response = client.get_object(bucket_name, object_name_parquet)
 pq_response.read()
@@ -80,11 +107,19 @@ pq_read_time = time.time() - start_time_pq
 pq_response.close()
 pq_response.release_conn()
 
+# Đo Gold
+start_time_gd = time.time()
+gd_response = client.get_object(bucket_name, object_name_gold)
+gd_response.read()
+gd_read_time = time.time() - start_time_gd
+gd_response.close()
+gd_response.release_conn()
+
 # -----------------------------------------
 # KẾT QUẢ BENCHMARK
 # -----------------------------------------
 print("\n" + "="*55)
-print("BÁO CÁO BENCHMARK: JSON vs PARQUET")
+print("BÁO CÁO BENCHMARK: BRONZE vs SILVER vs GOLD")
 print("="*55)
 print(f"1. Định dạng JSON (Lớp Bronze):")
 print(f"   - Kích thước : {json_size_kb:,.2f} KB")
@@ -94,6 +129,11 @@ print(f"2. Định dạng Parquet (Lớp Silver):")
 print(f"   - Kích thước : {parquet_size_kb:,.2f} KB")
 print(f"   - Tốc độ đọc : {pq_read_time:.5f} giây")
 print(f"   - Hiệu năng  : Giảm {((json_size_kb - parquet_size_kb) / json_size_kb * 100):.2f}% dung lượng lưu trữ")
+print("-" * 55)
+print(f"3. Định dạng Parquet+Snappy (Lớp Gold):")
+print(f"   - Kích thước : {gold_size_kb:,.2f} KB")
+print(f"   - Tốc độ đọc : {gd_read_time:.5f} giây")
+print(f"   - Đặc trưng  : Thêm cột hour, day, month (Feature Engineering)")
 print("="*55 + "\n")
 
 import matplotlib.pyplot as plt
